@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"time"
@@ -91,21 +93,24 @@ func relaySocks(client *net.TCPConn, target string, secret string) {
 		addr = net.IP(buffer[4:8]).String()
 		port = buffer[8:10]
 	} else if atyp == 0x4 { // ipv6
-		if _, err := io.ReadFull(client, buffer[5:22]); err != nil {
+		if _, err := io.ReadFull(client, buffer[5:23]); err != nil {
 			return
 		}
-		addr = net.IP(buffer[4:28]).String()
-		port = buffer[20:22]
+		addr = net.IP(buffer[5:21]).String()
+		port = buffer[21:23]
 	} else {
 		client.Write(sock5BadReply)
 		return
 	}
 	addr += ":" + strconv.FormatUint((uint64(port[0])<<8)|uint64(port[1]), 10)
+	fmt.Printf("[SOCKS] Target: %s\n", addr)
 	// dial agent
 	conn, err := net.DialTimeout("tcp", target, shortTimeout)
 	if err != nil {
+		log.Printf("[SOCKS] Failed to connect to agent %s: %v\n", target, err)
 		return
 	}
+	fmt.Printf("[SOCKS] Connected to agent: %s\n", target)
 	agent = conn.(*net.TCPConn)
 	// write link
 	if err := agent.SetDeadline(time.Now().Add(shortTimeout)); err != nil {
@@ -115,14 +120,22 @@ func relaySocks(client *net.TCPConn, target string, secret string) {
 	unit.forEncrypt(reqHead)
 	copy(unit.space(), addr)
 	if err := unit.writeTo(agent, unitKindLink, len(addr)); err != nil {
+		log.Printf("[SOCKS] Failed to write link request: %v\n", err)
 		return
 	}
+	fmt.Println("[SOCKS] Waiting for agent OK...")
 	// read ok
 	unit.forDecrypt()
 	kind, _, err := unit.readFrom(agent)
-	if err != nil || kind != unitKindOK {
+	if err != nil {
+		log.Printf("[SOCKS] Failed to read agent response: %v\n", err)
 		return
 	}
+	if kind != unitKindOK {
+		log.Printf("[SOCKS] Agent rejected, kind: %d\n", kind)
+		return
+	}
+	fmt.Println("[SOCKS] Agent OK, connecting to client")
 	// <--- reply
 	if _, err := client.Write(sock5GoodReply); err != nil {
 		return
